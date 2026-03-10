@@ -8,6 +8,7 @@ services:
       - PAPER_MODE=true # O false para live trading
       - API_HOST=0.0.0.0
       - API_PORT=8080
+      - DB_PATH=/app/data/tradingbot.db
       # NOTA: Los siguientes valores deben ser configurados como secretos 
       # en la interfaz de Coolify (Environment Variables), no en este archivo:
       # - ALPACA_API_KEY=your_api_key

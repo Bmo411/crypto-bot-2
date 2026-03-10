@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradingBot V5 | Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-panel">
+            <div class="logo-area">
+                <i class="ph-fill ph-robot"></i>
+                <h2>V5 Bot</h2>
+            </div>
+            
+            <nav class="main-nav">
+                <a href="#" class="nav-item active">
+                    <i class="ph ph-squares-four"></i> Dashboard
+                </a>
+                <a href="#" class="nav-item">
+                    <i class="ph ph-chart-line-up"></i> Performance
+                </a>
+                <a href="#" class="nav-item">
+                    <i class="ph ph-list-dashes"></i> Open Positions
+                </a>
+            </nav>
+            
+            <div class="status-indicator">
+                <div class="status-dot pulsing" id="health-dot"></div>
+                <span id="health-status">Connecting...</span>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-header">
+                <div>
+                    <h1>Dashboard Overview</h1>
+                    <p class="subtitle">Live monitoring of your TradingBot operations</p>
+                </div>
+                <div class="header-actions">
+                    <div class="metric-badge" id="uptime-badge">Uptime: --:--:--</div>
+                </div>
+            </header>
+
+            <!-- Metrics Grid -->
+            <div class="metrics-grid">
+                <!-- Total Equity -->
+                <div class="metric-card glass-panel highlight-card">
+                    <div class="card-icon blue"><i class="ph ph-wallet"></i></div>
+                    <div class="card-info">
+                        <h3>Total Equity</h3>
+                        <div class="value" id="val-equity">$0.00</div>
+                    </div>
+                </div>
+                
+                <!-- Daily PnL -->
+                <div class="metric-card glass-panel">
+                    <div class="card-icon green"><i class="ph ph-trend-up"></i></div>
+                    <div class="card-info">
+                        <h3>Daily PnL</h3>
+                        <div class="value positive" id="val-pnl-daily">+$0.00</div>
+                    </div>
+                </div>
+
+                <!-- Open Positions -->
+                <div class="metric-card glass-panel">
+                    <div class="card-icon purple"><i class="ph ph-stack"></i></div>
+                    <div class="card-info">
+                        <h3>Total Trades</h3>
+                        <div class="value" id="val-total-trades">0</div>
+                    </div>
+                </div>
+
+                <!-- Win Rate -->
+                <div class="metric-card glass-panel">
+                    <div class="card-icon orange"><i class="ph ph-target"></i></div>
+                    <div class="card-info">
+                        <h3>Win Rate</h3>
+                        <div class="value" id="val-win-rate">0.00%</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts and Tables Area -->
+            <div class="charts-area">
+                <!-- Main Chart -->
+                <div class="chart-container glass-panel">
+                    <div class="chart-header">
+                        <h3>Equity Curve</h3>
+                        <div class="hwm-badge">HWM: <span id="val-hwm">$0.00</span></div>
+                    </div>
+                    <div style="position: relative; height:300px; width:100%">
+                        <canvas id="equityChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Positions List -->
+                <div class="positions-container glass-panel">
+                    <div class="chart-header">
+                        <h3>Open Positions</h3>
+                        <span class="badge" id="positions-count">0</span>
+                    </div>
+                    <div class="table-wrapper">
+                        <table class="positions-table">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Side</th>
+                                    <th>Qty</th>
+                                    <th>Entry</th>
+                                    <th>Unrealized PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody id="positions-tbody">
+                                <!-- Populated by JS -->
+                                <tr><td colspan="5" style="text-align: center; color: var(--text-muted)">No open positions</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Extra Metrics Area -->
+            <div class="extra-metrics-area">
+                 <div class="metric-card glass-panel info-card">
+                    <div class="card-info">
+                        <h3>Max Drawdown</h3>
+                        <div class="value negative" id="val-drawdown">0.00%</div>
+                    </div>
+                </div>
+                <div class="metric-card glass-panel info-card">
+                    <div class="card-info">
+                        <h3>Slippage (Sum)</h3>
+                        <div class="value" id="val-slippage">$0.00</div>
+                    </div>
+                </div>
+                <div class="metric-card glass-panel info-card">
+                    <div class="card-info">
+                        <h3>Fees (Sum)</h3>
+                        <div class="value" id="val-fees">$0.00</div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
