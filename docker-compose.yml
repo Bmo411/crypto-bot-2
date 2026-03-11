@@ -13,6 +13,8 @@ services:
       # en la interfaz de Coolify (Environment Variables), no en este archivo:
       # - ALPACA_API_KEY=your_api_key
       # - ALPACA_SECRET_KEY=your_secret_key
+    ports:
+      - "18080:8080"
     volumes:
       - tradingbot_data:/app/data
 
