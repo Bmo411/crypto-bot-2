@@ -100,7 +100,7 @@ class CryptoWebSocketClient:
         # This blocks until disconnected
         await asyncio.to_thread(self._stream.run)
 
-    def _on_trade(self, trade) -> None:
+    async def _on_trade(self, trade) -> None:
         """
         Callback from Alpaca SDK — runs in a thread.
         Normalize the raw trade object and push to tick_queue.

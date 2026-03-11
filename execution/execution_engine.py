@@ -239,7 +239,7 @@ class ExecutionEngine:
         request = GetOrdersRequest(**kwargs)
         return self._client.get_orders(filter=request)
 
-    def _on_trade_update(self, data) -> None:
+    async def _on_trade_update(self, data) -> None:
         """
         Callback from TradingStream — runs in thread.
         Parse the fill event and push to fill_queue.
