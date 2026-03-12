@@ -3,6 +3,9 @@ TradingBot V5 — Broker Reconciliation Service
 
 Periodically verifies local state against Alpaca broker state.
 Trust-but-verify: the broker is the source of truth on conflict.
+
+After each reconciliation the live account equity is pushed into
+MetricsCollector so the dashboard always shows real values.
 """
 
 import asyncio
@@ -27,7 +30,9 @@ class Reconciler:
       1. Fetch broker positions, orders, account
       2. Compare to local state
       3. Auto-correct if safe (broker wins)
-      4. Log everything
+      4. Push account equity to MetricsCollector
+      5. Sync positions (incl. unrealized PnL) via PositionManager.sync_from_broker()
+      6. Log everything
     """
 
     def __init__(
@@ -36,11 +41,13 @@ class Reconciler:
         position_manager: PositionManager,
         risk_manager: RiskManager,
         repository: Repository,
+        metrics_collector=None,  # metrics.collector.MetricsCollector (optional for tests)
     ):
         self._engine = execution_engine
         self._pos_mgr = position_manager
         self._risk_mgr = risk_manager
         self._repo = repository
+        self._metrics = metrics_collector
         self._running = False
         self._last_reconciliation: float = 0
 
@@ -82,36 +89,54 @@ class Reconciler:
             log.error(f"Failed to fetch broker state: {e}")
             return {"error": str(e)}
 
-        # ── 1. Update equity cache ──────────────────────────────
+        # ── 1. Update equity in MetricsCollector (dashboard source of truth) ──
         equity = float(broker_account.equity)
         buying_power = float(broker_account.buying_power)
+        cash = float(getattr(broker_account, "cash", 0.0) or 0.0)
         self._risk_mgr.update_equity(equity, buying_power)
 
-        # ── 2. Compare positions ────────────────────────────────
-        broker_pos_map = {}
-        for bp in broker_positions:
-            symbol = str(bp.symbol)
-            qty = float(bp.qty)
-            side = "LONG" if qty > 0 else "SHORT" if qty < 0 else "FLAT"
-            broker_pos_map[symbol] = {
-                "side": side,
-                "quantity": abs(qty),
-                "avg_entry": float(bp.avg_entry_price),
-                "market_value": float(bp.market_value),
-                "unrealized_pnl": float(bp.unrealized_pl),
-            }
+        if self._metrics is not None:
+            self._metrics.update_account(
+                equity=equity,
+                cash=cash,
+                buying_power=buying_power,
+            )
+            log.info(
+                f"Metrics updated from broker — equity=${equity:,.2f}, "
+                f"cash=${cash:,.2f}, buying_power=${buying_power:,.2f}"
+            )
 
-        local_pos_map = {}
+        # ── 2. Build broker position map (before sync for discrepancy check) ──
+        broker_pos_map = {}
+        for bp in (broker_positions or []):
+            try:
+                symbol = str(bp.symbol)
+                qty = float(bp.qty)
+                side = "LONG" if qty > 0 else "SHORT" if qty < 0 else "FLAT"
+                broker_pos_map[symbol] = {
+                    "side": side,
+                    "quantity": abs(qty),
+                    "avg_entry": float(bp.avg_entry_price),
+                    "market_value": float(getattr(bp, "market_value", 0) or 0),
+                    "unrealized_pnl": float(bp.unrealized_pl),
+                    "current_price": float(getattr(bp, "current_price", 0) or 0),
+                }
+            except Exception as e:
+                log.error(f"Error parsing broker position {getattr(bp, 'symbol', '?')}: {e}")
+
+        # ── 3. Snapshot local state BEFORE sync (for discrepancy detection) ─
+        local_pos_map_before = {}
         for symbol, pos in self._pos_mgr.positions.items():
-            local_pos_map[symbol] = {
+            local_pos_map_before[symbol] = {
                 "side": pos.side,
                 "quantity": pos.quantity,
                 "avg_entry": pos.avg_entry_price,
             }
 
-        # Check for positions at broker but not locally
+        # ── 4. Detect structural discrepancies ──────────────────────────────
+        # Check for positions at broker but not locally (or mismatched)
         for symbol, bp in broker_pos_map.items():
-            local = local_pos_map.get(symbol)
+            local = local_pos_map_before.get(symbol)
             if local is None:
                 discrepancies.append({
                     "type": "MISSING_LOCAL",
@@ -119,18 +144,10 @@ class Reconciler:
                     "broker": bp,
                     "local": None,
                 })
-                # Auto-correct: add to local
-                await self._pos_mgr.set_from_broker(
-                    symbol=symbol,
-                    side=bp["side"],
-                    quantity=bp["quantity"],
-                    avg_entry=bp["avg_entry"],
-                )
                 log.warning(
                     f"[{symbol}] Position missing locally — "
-                    f"synced from broker: {bp['side']} {bp['quantity']}"
+                    f"will be synced from broker: {bp['side']} {bp['quantity']}"
                 )
-
             elif (
                 local["side"] != bp["side"]
                 or abs(local["quantity"] - bp["quantity"]) > 0.0001
@@ -141,20 +158,13 @@ class Reconciler:
                     "broker": bp,
                     "local": local,
                 })
-                # Auto-correct: broker wins
-                await self._pos_mgr.set_from_broker(
-                    symbol=symbol,
-                    side=bp["side"],
-                    quantity=bp["quantity"],
-                    avg_entry=bp["avg_entry"],
-                )
                 log.warning(
                     f"[{symbol}] Position mismatch — corrected to broker: "
                     f"{bp['side']} {bp['quantity']}"
                 )
 
         # Check for positions locally but not at broker
-        for symbol, local in local_pos_map.items():
+        for symbol, local in local_pos_map_before.items():
             if local["side"] != "FLAT" and symbol not in broker_pos_map:
                 discrepancies.append({
                     "type": "STALE_LOCAL",
@@ -162,21 +172,24 @@ class Reconciler:
                     "broker": None,
                     "local": local,
                 })
-                # Auto-correct: mark as FLAT
-                await self._pos_mgr.set_from_broker(
-                    symbol=symbol,
-                    side="FLAT",
-                    quantity=0.0,
-                    avg_entry=0.0,
-                )
-                log.warning(
-                    f"[{symbol}] Stale local position — marked FLAT"
-                )
+                log.warning(f"[{symbol}] Stale local position — will be marked FLAT by sync")
 
-        # ── 3. Update position count for risk manager ───────────
+        # ── 5. Sync positions from broker (applies all corrections + PnL) ───
+        await self._pos_mgr.sync_from_broker(broker_positions if broker_positions else [])
+
+        # Build final local_pos_map for persistence (post-sync state)
+        local_pos_map = {}
+        for symbol, pos in self._pos_mgr.positions.items():
+            local_pos_map[symbol] = {
+                "side": pos.side,
+                "quantity": pos.quantity,
+                "avg_entry": pos.avg_entry_price,
+            }
+
+        # ── 4. Update position count for risk manager ───────────────────────
         self._risk_mgr.update_position_count(self._pos_mgr.open_count)
 
-        # ── 4. Log reconciliation ───────────────────────────────
+        # ── 5. Persist reconciliation log ──────────────────────────────────
         action = "NONE" if not discrepancies else "AUTO_CORRECTED"
         await self._repo.insert_reconciliation(
             timestamp=now,

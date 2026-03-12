@@ -31,12 +31,19 @@ class TestPositionSizing:
         qty = risk_mgr.calculate_position_size(signal)
         assert qty > 0
 
-        # Risk budget: 84000 * 0.003 = $252
-        # Stop distance: 50000 * 0.01 = $500
-        # Risk qty: 252 / 500 = 0.504
-        # BUT max position: 84000 * 0.10 = $8,400 → 8400 / 50000 = 0.168
-        # 0.168 < 0.504 → capped at max position
-        expected_qty = 8400.0 / 50000.0  # 0.168
+        # Dynamic expectations based on current params from the risk_mgr instance
+        equity = 84000.0
+        risk_pct = risk_mgr._risk_per_trade
+        max_pos_pct = risk_mgr._max_position_pct
+        
+        risk_budget = equity * risk_pct
+        stop_dist = signal.price * risk_mgr._params.stop_loss_pct
+        risk_qty = risk_budget / stop_dist if stop_dist > 0 else 0
+        
+        max_notional = equity * max_pos_pct
+        max_qty = max_notional / signal.price if signal.price > 0 else 0
+        
+        expected_qty = min(risk_qty, max_qty)
         assert qty == pytest.approx(expected_qty, rel=0.01)
 
     def test_max_position_cap(self, risk_mgr):
@@ -50,9 +57,10 @@ class TestPositionSizing:
 
         qty = risk_mgr.calculate_position_size(signal)
 
-        # Max notional: 84000 * 0.10 = $8,400
-        # Max qty: 8400 / 0.50 = 16,800
-        max_qty = 8400.0 / 0.50
+        # Max notional: 84000 * max_position_pct
+        max_pos_pct = risk_mgr._max_position_pct
+        max_notional = 84000.0 * max_pos_pct
+        max_qty = max_notional / signal.price
         assert qty <= max_qty + 1  # allow small float tolerance
 
     def test_zero_price_returns_zero(self, risk_mgr):

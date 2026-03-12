@@ -159,7 +159,9 @@ class MeanReversionStrategy(AbstractStrategy):
 
         # ── 8. Exit signals ─────────────────────────────────────
         elif position_side == "LONG":
-            if zscore > -self._params.exit_threshold:
+            # BUGFIX: was `zscore > -exit_threshold` — almost always true, exits immediately.
+            # Correct: exit only after price fully reverts to positive territory.
+            if zscore >= self._params.exit_threshold:
                 log.info(
                     f"[{symbol}] LONG EXIT signal: Z={zscore:.3f} "
                     f"crossed above {-self._params.exit_threshold}"

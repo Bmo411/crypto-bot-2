@@ -3,6 +3,9 @@ TradingBot V5 — Async SQLite Database Manager
 
 Manages the aiosqlite connection with WAL mode for concurrent reads.
 Provides a context-manager interface for safe transactions.
+
+BUG FIX: fetch_one and fetch_all now acquire the asyncio lock before
+reading to prevent race conditions with concurrent writes.
 """
 
 import asyncio
@@ -71,17 +74,29 @@ class Database:
             await self.conn.commit()
 
     async def fetch_one(self, sql: str, params: tuple = ()) -> Optional[dict]:
-        """Fetch a single row as a dict."""
-        cursor = await self.conn.execute(sql, params)
-        row = await cursor.fetchone()
+        """
+        Fetch a single row as a dict.
+
+        FIXED: Now acquires the asyncio lock to prevent reading during a
+        concurrent write, which could observe partially committed data.
+        """
+        async with self._lock:
+            cursor = await self.conn.execute(sql, params)
+            row = await cursor.fetchone()
         if row is None:
             return None
         return dict(row)
 
     async def fetch_all(self, sql: str, params: tuple = ()) -> list[dict]:
-        """Fetch all matching rows as dicts."""
-        cursor = await self.conn.execute(sql, params)
-        rows = await cursor.fetchall()
+        """
+        Fetch all matching rows as dicts.
+
+        FIXED: Now acquires the asyncio lock to prevent reading during a
+        concurrent write.
+        """
+        async with self._lock:
+            cursor = await self.conn.execute(sql, params)
+            rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
     async def insert(self, sql: str, params: tuple = ()) -> int:

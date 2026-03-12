@@ -53,6 +53,7 @@ from metrics.dashboard import init_dashboard
 from recovery.state_recovery import StateRecoveryService
 
 from api.server import create_app
+from execution.broker_client import BrokerClient
 
 log = logging.getLogger("main")
 
@@ -84,6 +85,7 @@ class TradingBot:
         self.reconciler: Reconciler | None = None
         self.metrics: MetricsCollector | None = None
         self.recovery: StateRecoveryService | None = None
+        self.broker_client: BrokerClient | None = None
 
         self._running = False
         self._tasks: list[asyncio.Task] = []
@@ -123,12 +125,16 @@ class TradingBot:
         # Risk
         self.risk_mgr = RiskManager(STRATEGY_PARAMS)
 
+        # Shared broker client (cached async gateway to Alpaca REST)
+        self.broker_client = BrokerClient()
+
         # Execution
         self.order_mgr = OrderManager()
         self.exec_engine = ExecutionEngine(
             order_manager=self.order_mgr,
             repository=self.repo,
             fill_queue=self.fill_queue,
+            broker_client=self.broker_client,
         )
         self.slippage = SlippageTracker()
 
@@ -141,6 +147,7 @@ class TradingBot:
             position_manager=self.pos_mgr,
             risk_manager=self.risk_mgr,
             repository=self.repo,
+            metrics_collector=None,   # patched below after MetricsCollector init
         )
 
         # Metrics
@@ -148,10 +155,14 @@ class TradingBot:
             position_manager=self.pos_mgr,
             risk_manager=self.risk_mgr,
             repository=self.repo,
+            broker_client=self.broker_client,
         )
 
+        # Wire metrics into reconciler now that both exist
+        self.reconciler._metrics = self.metrics
+
         # Dashboard
-        init_dashboard(self.metrics, self.pos_mgr)
+        init_dashboard(self.metrics, self.pos_mgr, self.broker_client)
 
         # Recovery
         self.recovery = StateRecoveryService(
@@ -297,28 +308,70 @@ class TradingBot:
                     )
                     continue
 
-                # Determine side and quantity
-                if signal.signal_type in ("LONG_ENTRY", "SHORT_EXIT",
-                                           "STOP_LOSS", "TAKE_PROFIT"):
-                    if signal.signal_type == "LONG_ENTRY":
-                        side = "BUY"
-                        qty = self.risk_mgr.calculate_position_size(signal)
-                    elif signal.signal_type in ("SHORT_EXIT", "STOP_LOSS",
-                                                 "TAKE_PROFIT"):
-                        side = "BUY"
-                        qty = pos.quantity  # close full position
-                    else:
+                # ── P0 FIX: Duplicate order guard ──────────────────────────────────────
+                # Do not open a new entry if a position already exists for this symbol.
+                # Without this guard, concurrent bar events can submit 2+ orders for the
+                # same symbol before any fill arrives, creating phantom positions.
+                if signal.signal_type in ("LONG_ENTRY", "SHORT_ENTRY"):
+                    if pos.is_open:
+                        log.debug(
+                            f"[{signal.symbol}] Entry skipped — position already open "
+                            f"({pos.side} {pos.quantity:.6f})"
+                        )
                         continue
 
-                elif signal.signal_type in ("SHORT_ENTRY", "LONG_EXIT"):
-                    if signal.signal_type == "SHORT_ENTRY":
-                        side = "SELL"
-                        qty = self.risk_mgr.calculate_position_size(signal)
-                    else:  # LONG_EXIT
-                        side = "SELL"
-                        qty = pos.quantity  # close full position
+                # ── P0 FIX: Correct side mapping per position direction ────────────────
+                # CRITICAL BUG WAS: STOP_LOSS/TAKE_PROFIT always used side="BUY" regardless
+                # of whether the open position was LONG or SHORT.
+                # A LONG position must exit via SELL; a SHORT position via BUY.
+                from config.symbols import get_symbol_config
+                sym_cfg = get_symbol_config(signal.symbol)
+                is_crypto = sym_cfg is not None and sym_cfg.market == "CRYPTO"
+
+                if signal.signal_type == "LONG_ENTRY":
+                    # ── P0 FIX: Skip SHORT_ENTRY for crypto (Alpaca paper rejects it) ──
+                    if is_crypto:
+                        side = "BUY"
+                    else:
+                        side = "BUY"
+                    qty = self.risk_mgr.calculate_position_size(signal)
+
+                elif signal.signal_type == "SHORT_ENTRY":
+                    if is_crypto:
+                        # Alpaca paper does NOT support crypto short sales — skip
+                        log.debug(
+                            f"[{signal.symbol}] SHORT_ENTRY skipped — crypto does not "
+                            f"support short selling on Alpaca paper"
+                        )
+                        continue
+                    side = "SELL"
+                    qty = self.risk_mgr.calculate_position_size(signal)
+
+                elif signal.signal_type in ("LONG_EXIT", "STOP_LOSS", "TAKE_PROFIT") \
+                        and pos.side == "LONG":
+                    # Close a LONG position → SELL
+                    side = "SELL"
+                    qty = pos.quantity
+
+                elif signal.signal_type in ("SHORT_EXIT", "STOP_LOSS", "TAKE_PROFIT") \
+                        and pos.side == "SHORT":
+                    # Close a SHORT position → BUY
+                    side = "BUY"
+                    qty = pos.quantity
+
+                elif signal.signal_type == "LONG_EXIT" and not pos.is_open:
+                    log.debug(f"[{signal.symbol}] LONG_EXIT ignored — no open position")
+                    continue
+
+                elif signal.signal_type == "SHORT_EXIT" and not pos.is_open:
+                    log.debug(f"[{signal.symbol}] SHORT_EXIT ignored — no open position")
+                    continue
 
                 else:
+                    log.warning(
+                        f"[{signal.symbol}] Unhandled signal '{signal.signal_type}' "
+                        f"for position side '{pos.side}' — skipping"
+                    )
                     continue
 
                 if qty <= 0:

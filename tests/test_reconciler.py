@@ -70,6 +70,8 @@ class TestDiscrepancyDetection:
         mock_pos.avg_entry_price = "50000.0"
         mock_pos.market_value = "5000.0"
         mock_pos.unrealized_pl = "100.0"
+        mock_pos.current_price = "51000.0"
+        mock_pos.unrealized_plpc = "0.002"
 
         exec_engine.get_account_sync = MagicMock(return_value=mock_account)
         exec_engine.get_positions_sync = MagicMock(return_value=[mock_pos])

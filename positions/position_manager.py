@@ -1,8 +1,9 @@
 """
 TradingBot V5 — Position Manager
 
-Maintains live position state. Positions are updated ONLY from FillEvents.
-This is the single source of truth for the bot's position state.
+Maintains live position state. Positions are updated from FillEvents AND
+periodicbroker syncs. The broker is the source of truth for quantity/side;
+fill events are still processed to generate TradeRecords for PnL tracking.
 """
 
 import asyncio
@@ -239,6 +240,82 @@ class PositionManager:
                 f"[{symbol}] Position set from broker: "
                 f"{side} {quantity:.6f} @ ${avg_entry:.2f}"
             )
+
+    async def sync_from_broker(self, broker_positions: list) -> None:
+        """
+        Synchronise all open positions from Alpaca broker objects.
+
+        This is called periodically by MetricsCollector and after every
+        reconciliation.  It updates:
+          - qty / side / avg_entry (structural state)
+          - unrealized_pnl / current_price / unrealized_plpc (live PnL)
+
+        Positions present locally but absent from broker are marked FLAT.
+        """
+        async with self._lock:
+            broker_symbols: set[str] = set()
+
+            for bp in broker_positions:
+                try:
+                    symbol = str(bp.symbol)
+                    qty = float(bp.qty)
+                    side = "LONG" if qty > 0 else ("SHORT" if qty < 0 else "FLAT")
+                    avg_entry = float(bp.avg_entry_price)
+                    unrealized_pl = float(bp.unrealized_pl)
+                    current_price = float(bp.current_price)
+                    unrealized_plpc = float(bp.unrealized_plpc)
+                    broker_symbols.add(symbol)
+
+                    pos = self.get_position(symbol)
+                    pos.side = side
+                    pos.quantity = abs(qty)
+                    pos.avg_entry_price = avg_entry
+                    pos.unrealized_pnl = unrealized_pl
+                    pos.current_price = current_price      # type: ignore[attr-defined]
+                    pos.unrealized_plpc = unrealized_plpc  # type: ignore[attr-defined]
+                    pos.last_update = time.time()
+
+                    await self._repo.upsert_position(
+                        symbol=symbol,
+                        side=side,
+                        quantity=abs(qty),
+                        avg_entry_price=avg_entry,
+                        unrealized_pnl=unrealized_pl,
+                    )
+                except Exception as e:
+                    log.error(f"sync_from_broker error for {getattr(bp, 'symbol', '?')}: {e}")
+                    continue
+
+            # Mark any locally-open positions not in broker as FLAT
+            for symbol, pos in self._positions.items():
+                if pos.is_open and symbol not in broker_symbols:
+                    pos.side = PositionSide.FLAT.value
+                    pos.quantity = 0.0
+                    pos.unrealized_pnl = 0.0
+                    log.warning(
+                        f"[{symbol}] Not found at broker — marking FLAT"
+                    )
+                    await self._repo.upsert_position(
+                        symbol=symbol,
+                        side=PositionSide.FLAT.value,
+                        quantity=0.0,
+                        avg_entry_price=0.0,
+                        unrealized_pnl=0.0,
+                    )
+
+        log.debug(
+            f"sync_from_broker complete — {len(broker_symbols)} broker positions"
+        )
+
+    async def update_unrealized_pnl(
+        self, symbol: str, unrealized_pl: float, current_price: float = 0.0
+    ) -> None:
+        """Update unrealized PnL for a single position (thread-safe)."""
+        async with self._lock:
+            if symbol in self._positions:
+                self._positions[symbol].unrealized_pnl = unrealized_pl
+                if current_price:
+                    self._positions[symbol].current_price = current_price  # type: ignore[attr-defined]
 
     async def load_from_db(self) -> None:
         """Load positions from database on startup."""

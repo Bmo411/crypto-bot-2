@@ -18,6 +18,7 @@ from alpaca.trading.stream import TradingStream
 from config.settings import SETTINGS
 from core.events import SignalEvent, FillEvent
 from core.enums import OrderStatus
+from execution.broker_client import BrokerClient
 from execution.order_manager import OrderManager, ManagedOrder
 from storage.repository import Repository
 
@@ -38,12 +39,14 @@ class ExecutionEngine:
         order_manager: OrderManager,
         repository: Repository,
         fill_queue: asyncio.Queue,
+        broker_client: BrokerClient,
     ):
         self._client = TradingClient(
             api_key=SETTINGS.alpaca_api_key,
             secret_key=SETTINGS.alpaca_secret_key,
             paper=SETTINGS.paper_mode,
         )
+        self._broker_client = broker_client
         self._order_mgr = order_manager
         self._repo = repository
         self._fill_queue = fill_queue
@@ -70,11 +73,13 @@ class ExecutionEngine:
         """
         db_order_id = None
         try:
-            # Pre-flight: check account buying power
-            account = await asyncio.wait_for(
-                asyncio.to_thread(self._client.get_account),
-                timeout=SETTINGS.order_timeout,
-            )
+            # Pre-flight: check account buying power using CACHED account data
+            # FIXED P2: Uses BrokerClient to avoid unnecessary REST calls before every order.
+            account = await self._broker_client.get_account()
+            if account is None:
+                log.error(f"[{signal.symbol}] Pre-flight check failed: account data unavailable")
+                return False
+
             buying_power = float(account.buying_power)
             notional = quantity * signal.price
 
@@ -260,10 +265,13 @@ class ExecutionEngine:
                 )
 
                 # Non-blocking put to fill_queue
+                # FIXED P2: TradingStream.run() runs in a separate thread.
+                # asyncio.Queue.put_nowait is not thread-safe.
                 try:
-                    self._fill_queue.put_nowait(fill)
-                except asyncio.QueueFull:
-                    log.error("Fill queue full — CRITICAL: fill event dropped!")
+                    loop = asyncio.get_event_loop()
+                    loop.call_soon_threadsafe(self._fill_queue.put_nowait, fill)
+                except Exception as e:
+                    log.error(f"Failed to push fill to queue: {e}")
 
                 log.info(
                     f"[{order.symbol}] FILL: {order.side} "

@@ -46,6 +46,8 @@ class Settings:
     heartbeat_interval: int = 60           # 1 minute
     equity_snapshot_interval: int = 60     # 1 minute
     metrics_snapshot_interval: int = 60    # 1 minute
+    account_refresh_interval: int = 30     # Alpaca account TTL cache
+    positions_refresh_interval: int = 10   # Alpaca positions TTL cache
 
     # ── API Server ──────────────────────────────────────────────
     api_host: str = os.getenv("API_HOST", "127.0.0.1")
